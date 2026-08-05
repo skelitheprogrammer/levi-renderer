@@ -1,0 +1,6 @@
+[submodule "src/glTF2"]
+	path = src/glTF2
+	url = https://github.com/Pawel82S/glTF2.git
+[submodule "src/gpu"]
+	path = src/gpu
+	url = https://github.com/leotmp/no_gfx_api.git
