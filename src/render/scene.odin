@@ -1,11 +1,34 @@
 package render
 
-import "../gpu"
+import "../gpu/gpu"
+import "core:testing"
+
+Attribute_Type :: enum {
+	Position,
+	Normal,
+	UV0,
+	Color,
+}
+
+
+ATTRIBUTE_STRIDES := [Attribute_Type]int {
+	.Position = size_of([3]f32),
+	.Normal   = size_of([3]f32),
+	.UV0      = size_of([2]f32),
+	.Color    = size_of([4]f32),
+}
+
 
 Mesh :: struct {
-	pos:     [][4]f32,
-	col:     [][4]f32,
-	indices: []u32,
+	streams:    [Attribute_Type][]u8,
+	indices:    []u32,
+	base_color: [4]f32,
+	aabb_min:   [3]f32,
+	aabb_max:   [3]f32,
+}
+
+mesh_vertex_count :: proc(m: ^Mesh) -> int {
+	return len(m.streams[.Position]) / ATTRIBUTE_STRIDES[.Position]
 }
 
 @(private)
@@ -15,16 +38,6 @@ Mesh_Meta :: struct {
 	index_count:   u32,
 }
 
-Vertex_GPU :: struct #align (16) {
-	pos: [4]f32,
-	col: [4]f32,
-}
-
-Draw_Root :: struct {
-	vertices:  rawptr,
-	view_proj: [16]f32,
-}
-
 Indirect_Draw :: struct {
 	using cmd: gpu.Draw_Indexed_Indirect_Command,
 	model:     [16]f32,
@@ -32,76 +45,101 @@ Indirect_Draw :: struct {
 }
 
 Scene :: struct {
-	gpu_verts:    gpu.slice_t(Vertex_GPU),
-	gpu_indices:  gpu.slice_t(u32),
-	gpu_indirect: gpu.slice_t(Indirect_Draw),
-	gpu_count:    gpu.slice_t(u32),
+	streams:  [Attribute_Type]gpu.slice_t(u8),
+	indices:  gpu.slice_t(u32),
+	indirect: gpu.slice_t(Indirect_Draw),
+	count:    gpu.slice_t(u32),
 }
 
 upload_scene :: proc(s: ^Scene, meshes: []Mesh, models: []matrix[4, 4]f32) {
+	assert(len(meshes) == len(models))
+	if len(meshes) == 0 do return
+
+
+	present: [Attribute_Type]bool
+	for a in Attribute_Type do present[a] = len(meshes[0].streams[a]) > 0
+	assert(present[.Position], "mesh without positions")
+	for &m in meshes {
+		verts := mesh_vertex_count(&m)
+		for a in Attribute_Type {
+			has := len(m.streams[a]) > 0
+			assert(has == present[a], "mixed attribute layouts in one scene")
+			if has do assert(len(m.streams[a]) == verts * ATTRIBUTE_STRIDES[a])
+		}
+		assert(len(m.indices) > 0)
+	}
+
 	arena := gpu.arena_create()
 	defer gpu.arena_destroy(&arena)
 
-	meshes_meta := make([]Mesh_Meta, len(meshes))
-	defer delete(meshes_meta)
+	metas := make([]Mesh_Meta, len(meshes))
+	defer delete(metas)
 
-	total_verts: i32
-	total_indices: u32
-	for &m, i in meshes {
-		meshes_meta[i] = Mesh_Meta {
-			vertex_offset = total_verts,
-			index_offset  = total_indices,
-			index_count   = u32(len(m.indices)),
-		}
-		total_verts += i32(len(m.pos))
-		total_indices += u32(len(m.indices))
+	total_bytes: [Attribute_Type]int
+	total_verts: int
+	total_indices: int
+	for &m in meshes {
+		total_verts += mesh_vertex_count(&m)
+		total_indices += len(m.indices)
+		for a in Attribute_Type do total_bytes[a] += len(m.streams[a])
 	}
 
-	v_staging := gpu.arena_alloc(&arena, Vertex_GPU, int(total_verts))
-	i_staging := gpu.arena_alloc(&arena, u32, int(total_indices))
+	staging: [Attribute_Type]gpu.slice_t(u8)
+	for a in Attribute_Type {
+		if present[a] do staging[a] = gpu.arena_alloc(&arena, u8, total_bytes[a])
+	}
+	i_staging := gpu.arena_alloc(&arena, u32, total_indices)
+
+	offsets: [Attribute_Type]int
 	v_off: int
 	i_off: int
-	for &m in meshes {
-		for k in 0 ..< len(m.pos) {
-			v_staging.cpu[v_off + k] = Vertex_GPU {
-				pos = m.pos[k],
-				col = m.col[k],
-			}
+	for &m, i in meshes {
+		metas[i] = Mesh_Meta {
+			vertex_offset = i32(v_off),
+			index_offset  = u32(i_off),
+			index_count   = u32(len(m.indices)),
+		}
+		for a in Attribute_Type {
+			if !present[a] do continue
+			copy(staging[a].cpu[offsets[a]:], m.streams[a])
+			offsets[a] += len(m.streams[a])
 		}
 		copy(i_staging.cpu[i_off:], m.indices)
-		v_off += len(m.pos)
+		v_off += mesh_vertex_count(&m)
 		i_off += len(m.indices)
 	}
 
-	s.gpu_verts = gpu.mem_alloc(Vertex_GPU, int(total_verts), GPU)
-	s.gpu_indices = gpu.mem_alloc(u32, int(total_indices), GPU)
-
 	cmd := gpu.commands_begin(.Main)
-	gpu.cmd_mem_copy(cmd, s.gpu_verts, v_staging)
-	gpu.cmd_mem_copy(cmd, s.gpu_indices, i_staging)
+
+	for a in Attribute_Type {
+		if !present[a] do continue
+		s.streams[a] = gpu.mem_alloc(u8, total_bytes[a], GPU)
+		gpu.cmd_mem_copy(cmd, s.streams[a], staging[a])
+	}
+	s.indices = gpu.mem_alloc(u32, total_indices, GPU)
+	gpu.cmd_mem_copy(cmd, s.indices, i_staging)
 
 	indirect := gpu.arena_alloc(&arena, Indirect_Draw, len(meshes))
 	for i in 0 ..< len(meshes) {
-		meta := meshes_meta[i]
 		indirect.cpu[i] = Indirect_Draw {
 			cmd = gpu.Draw_Indexed_Indirect_Command {
-				index_count = meta.index_count,
+				index_count = metas[i].index_count,
 				instance_count = 1,
-				first_index = meta.index_offset,
-				vertex_offset = meta.vertex_offset,
+				first_index = metas[i].index_offset,
+				vertex_offset = metas[i].vertex_offset,
 				first_instance = u32(i),
 			},
 			model = transmute([16]f32)models[i],
-			color = {1, 1, 1, 1},
+			color = meshes[i].base_color,
 		}
 	}
-	s.gpu_indirect = gpu.mem_alloc(Indirect_Draw, len(meshes), GPU)
-	gpu.cmd_mem_copy(cmd, s.gpu_indirect, indirect)
+	s.indirect = gpu.mem_alloc(Indirect_Draw, len(meshes), GPU)
+	gpu.cmd_mem_copy(cmd, s.indirect, indirect)
 
 	count := gpu.arena_alloc(&arena, u32)
 	count.cpu^ = u32(len(meshes))
-	s.gpu_count = gpu.mem_alloc(u32, 1, GPU)
-	gpu.cmd_mem_copy(cmd, gpu.slice_to_ptr(s.gpu_count), count)
+	s.count = gpu.mem_alloc(u32, 1, GPU)
+	gpu.cmd_mem_copy(cmd, gpu.slice_to_ptr(s.count), count)
 
 	gpu.cmd_barrier(cmd, .Transfer, .All, {})
 	gpu.queue_submit(.Main, {cmd})
@@ -109,8 +147,12 @@ upload_scene :: proc(s: ^Scene, meshes: []Mesh, models: []matrix[4, 4]f32) {
 }
 
 scene_destroy :: proc(s: ^Scene) {
-	gpu.mem_free(s.gpu_verts)
-	gpu.mem_free(s.gpu_indices)
-	gpu.mem_free(s.gpu_indirect)
-	gpu.mem_free(s.gpu_count)
+	if s.indices.gpu.ptr == nil do return
+	for a in Attribute_Type {
+		if s.streams[a].gpu.ptr != nil do gpu.mem_free(s.streams[a])
+	}
+	gpu.mem_free(s.indices)
+	gpu.mem_free(s.indirect)
+	gpu.mem_free(s.count)
+	s^ = {}
 }

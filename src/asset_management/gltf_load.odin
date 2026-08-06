@@ -10,8 +10,11 @@ Load_Result :: struct {
 }
 
 load_scene_data :: proc(path: string, allocator := context.allocator) -> Load_Result {
-	data, err := g.load_from_file(path, allocator); ensure(err == nil)
+	data, err := g.load_from_file(path, allocator)
+	ensure(err == nil)
 	defer g.unload(data)
+
+	ensure(len(data.extensions_required) == 0, "asset requires unsupported glTF extensions")
 
 	meshes := make([dynamic]render.Mesh, allocator)
 	models := make([dynamic]matrix[4, 4]f32, allocator)
@@ -23,9 +26,12 @@ load_scene_data :: proc(path: string, allocator := context.allocator) -> Load_Re
 	stack := make([dynamic]Stack_Entry, allocator)
 	defer delete(stack)
 
-	for scene in data.scenes {
-		for node in scene.nodes {
-			append(&stack, Stack_Entry{node, linalg.MATRIX4F32_IDENTITY})
+
+	if idx, ok := data.scene.?; ok && int(idx) < len(data.scenes) {
+		for node in data.scenes[idx].nodes do append(&stack, Stack_Entry{node, linalg.MATRIX4F32_IDENTITY})
+	} else {
+		for scene in data.scenes {
+			for node in scene.nodes do append(&stack, Stack_Entry{node, linalg.MATRIX4F32_IDENTITY})
 		}
 	}
 
@@ -36,8 +42,8 @@ load_scene_data :: proc(path: string, allocator := context.allocator) -> Load_Re
 		node := &data.nodes[entry.node]
 		world := entry.parent_world * node_transform(node)
 
-		if node.mesh != nil {
-			mesh := &data.meshes[node.mesh.(g.Integer)]
+		if mid, ok := node.mesh.?; ok {
+			mesh := &data.meshes[mid]
 			for &prim in mesh.primitives {
 				if prim.mode != .Triangles do continue
 				append(&meshes, emit_mesh(data, &prim, allocator))
@@ -45,12 +51,19 @@ load_scene_data :: proc(path: string, allocator := context.allocator) -> Load_Re
 			}
 		}
 
-		for child in node.children {
-			append(&stack, Stack_Entry{child, world})
-		}
+		for child in node.children do append(&stack, Stack_Entry{child, world})
 	}
 
 	return Load_Result{meshes, models}
+}
+
+free_scene_data :: proc(r: Load_Result) {
+	for &m in r.meshes {
+		for &s in m.streams do delete(s)
+		delete(m.indices)
+	}
+	delete(r.meshes)
+	delete(r.models)
 }
 
 @(private)
@@ -60,48 +73,102 @@ emit_mesh :: proc(
 	allocator := context.allocator,
 ) -> render.Mesh {
 	m: render.Mesh
+	m.base_color = {1, 1, 1, 1}
 
-	for k, v in prim.attributes {
-		switch k {
+	for name, acc in prim.attributes {
+		switch name {
 		case "POSITION":
-			buf := g.buffer_slice(data, v).([][3]f32)
-			m.pos = make([][4]f32, len(buf), allocator)
-			for p, i in buf {
-				m.pos[i] = {p[0], p[1], p[2], 1} // no world transform baked
-			}
+			m.streams[.Position] = transmute([]u8)gather_vec3(data, acc, allocator)
+			a := data.accessors[acc]
+			if mn, ok := a.min.?; ok do m.aabb_min = {f32(mn[0]), f32(mn[1]), f32(mn[2])}
+			if mx, ok := a.max.?; ok do m.aabb_max = {f32(mx[0]), f32(mx[1]), f32(mx[2])}
+		case "NORMAL":
+			m.streams[.Normal] = transmute([]u8)gather_vec3(data, acc, allocator)
+		case "TEXCOORD_0":
+			m.streams[.UV0] = transmute([]u8)gather_vec2(data, acc, allocator)
 		case "COLOR_0":
-			buf := g.buffer_slice(data, v).([][3]f32)
-			m.col = make([][4]f32, len(buf), allocator)
-			for c, i in buf {
-				m.col[i] = {c[0], c[1], c[2], 1}
-			}
+			m.streams[.Color] = transmute([]u8)gather_color(data, acc, allocator)
 		}
 	}
+	ensure(len(m.streams[.Position]) > 0, "primitive without POSITION")
 
-	if m.col == nil {
-		m.col = make([][4]f32, len(m.pos), allocator)
-		for &c in m.col do c = {1, 1, 1, 1}
-	}
-
-	if prim.indices != nil {
-		id := prim.indices.(g.Integer)
-		acc := data.accessors[id]
-		#partial switch acc.component_type {
-		case .Unsigned_Short:
-			buf := g.buffer_slice(data, id).([]u16)
-			m.indices = make([]u32, len(buf), allocator)
-			for i, v in buf do m.indices[i] = u32(v)
-		case .Unsigned_Int:
-			buf := g.buffer_slice(data, id).([]u32)
-			m.indices = make([]u32, len(buf), allocator)
-			copy(m.indices, buf)
+	if pid, ok := prim.indices.?; ok {
+		#partial switch vals in g.buffer_slice(data, pid) {
+		case []u8:
+			m.indices = make([]u32, len(vals), allocator)
+			for i, v in vals do m.indices[i] = u32(v)
+		case []u16:
+			m.indices = make([]u32, len(vals), allocator)
+			for i, v in vals do m.indices[i] = u32(v)
+		case []u32:
+			m.indices = make([]u32, len(vals), allocator)
+			copy(m.indices, vals)
+		case:
+			ensure(false, "unsupported index component type")
 		}
 	} else {
-		m.indices = make([]u32, len(m.pos), allocator)
-		for i in 0 ..< len(m.pos) do m.indices[i] = u32(i)
+		count := render.mesh_vertex_count(&m)
+		m.indices = make([]u32, count, allocator)
+		for i in 0 ..< count do m.indices[i] = u32(i)
+	}
+
+	if mid, ok := prim.material.?; ok && int(mid) < len(data.materials) {
+		if mr, ok2 := data.materials[mid].metallic_roughness.?; ok2 {
+			f := mr.base_color_factor
+			m.base_color = {f32(f[0]), f32(f[1]), f32(f[2]), f32(f[3])}
+		}
 	}
 
 	return m
+}
+
+
+@(private)
+gather_vec3 :: proc(data: ^g.Data, acc: g.Integer, allocator := context.allocator) -> [][3]f32 {
+	#partial switch vals in g.buffer_slice(data, acc) {
+	case [][3]f32:
+		out := make([][3]f32, len(vals), allocator)
+		copy(out, vals)
+		return out
+	case:
+		ensure(false, "unsupported VEC3 component format")
+	}
+	return nil
+}
+
+@(private)
+gather_vec2 :: proc(data: ^g.Data, acc: g.Integer, allocator := context.allocator) -> [][2]f32 {
+	out: [][2]f32
+	#partial switch vals in g.buffer_slice(data, acc) {
+	case [][2]f32:
+		out = make([][2]f32, len(vals), allocator)
+		copy(out, vals)
+	case [][3]f32:
+		out = make([][2]f32, len(vals), allocator)
+		for v, i in vals do out[i] = {v[0], v[1]}
+	case:
+		ensure(false, "unsupported TEXCOORD format")
+	}
+	return out
+}
+
+@(private)
+gather_color :: proc(data: ^g.Data, acc: g.Integer, allocator := context.allocator) -> [][4]f32 {
+	out: [][4]f32
+	#partial switch vals in g.buffer_slice(data, acc) {
+	case [][3]f32:
+		out = make([][4]f32, len(vals), allocator)
+		for v, i in vals do out[i] = {v[0], v[1], v[2], 1}
+	case [][4]f32:
+		out = make([][4]f32, len(vals), allocator)
+		copy(out, vals)
+	case [][4]u8:
+		out = make([][4]f32, len(vals), allocator)
+		for v, i in vals do out[i] = {f32(v[0]) / 255, f32(v[1]) / 255, f32(v[2]) / 255, f32(v[3]) / 255}
+	case:
+		ensure(false, "unsupported COLOR_0 format")
+	}
+	return out
 }
 
 @(private)
