@@ -1,6 +1,6 @@
 package render
 
-import "../gpu"
+import "../gpu/gpu"
 import "core:os"
 import path "core:path/filepath"
 import "core:slice"
@@ -13,7 +13,8 @@ Shader_Registry :: struct {
 }
 
 shader_registry_scan :: proc(reg: ^Shader_Registry, dir: string, allocator := context.allocator) {
-	reg.entries = make(map[string]Shader_Pair, allocator)
+	if reg.entries == nil do reg.entries = make(map[string]Shader_Pair, allocator)
+
 	infos, err := os.read_all_directory_by_path(dir, allocator)
 	ensure(err == nil, "shader dir not found")
 	defer delete(infos)
@@ -35,7 +36,8 @@ shader_registry_scan :: proc(reg: ^Shader_Registry, dir: string, allocator := co
 			continue
 		}
 
-		full, join_err := path.join({dir, info.name}, allocator); ensure(join_err == .None)
+		full, join_err := path.join({dir, info.name}, allocator)
+		ensure(join_err == .None)
 		data, read_err := os.read_entire_file(full, allocator)
 		delete(full)
 		ensure(read_err == nil)
@@ -59,7 +61,6 @@ shader_registry_destroy :: proc(reg: ^Shader_Registry) {
 	delete(reg.entries)
 }
 
-@(private)
 resolve_shader_pair :: proc(reg: ^Shader_Registry, base: string) -> Shader_Pair {
 	pair := reg.entries[base]
 	ensure(pair[.Vertex] != nil, "missing vertex shader")

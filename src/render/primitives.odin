@@ -3,31 +3,38 @@ package render
 import "core:math/linalg"
 
 prim_triangle :: proc(allocator := context.allocator) -> (vertex: Mesh) {
-	vertex.pos = make([][4]f32, 3, allocator)
-	vertex.pos[0] = {-0.5, -0.5, 0, 1}
-	vertex.pos[1] = {0.5, -0.5, 0, 1}
-	vertex.pos[2] = {0.0, 0.5, 0, 1}
+	positions := make([][3]f32, 3, allocator)
+	positions[0] = {-0.5, -0.5, 0}
+	positions[1] = {0.5, -0.5, 0}
+	positions[2] = {0.0, 0.5, 0}
+	vertex.streams[.Position] = transmute([]u8)positions
+
+	normals := make([][3]f32, 3, allocator)
+	for &n in normals do n = {0, 0, 1}
+	vertex.streams[.Normal] = transmute([]u8)normals
 
 	vertex.indices = make([]u32, 3, allocator)
 	vertex.indices[0] = 0
-	vertex.indices[2] = 2
 	vertex.indices[1] = 1
+	vertex.indices[2] = 2
 
-	vertex.col = make([][4]f32, 3, allocator)
-	vertex.col[0] = {1, 0, 0, 1}
-	vertex.col[1] = {0, 1, 0, 1}
-	vertex.col[2] = {0, 0, 1, 1}
-
+	vertex.base_color = {1, 1, 1, 1}
+	vertex.aabb_min = {-0.5, -0.5, 0}
+	vertex.aabb_max = {0.5, 0.5, 0}
 	return
 }
 
-
 prim_quad :: proc(allocator := context.allocator) -> (vertex: Mesh) {
-	vertex.pos = make([][4]f32, 4, allocator)
-	vertex.pos[0] = {-0.5, -0.5, 0, 1}
-	vertex.pos[1] = {0.5, -0.5, 0, 1}
-	vertex.pos[2] = {0.5, 0.5, 0, 1}
-	vertex.pos[3] = {-0.5, 0.5, 0, 1}
+	positions := make([][3]f32, 4, allocator)
+	positions[0] = {-0.5, -0.5, 0}
+	positions[1] = {0.5, -0.5, 0}
+	positions[2] = {0.5, 0.5, 0}
+	positions[3] = {-0.5, 0.5, 0}
+	vertex.streams[.Position] = transmute([]u8)positions
+
+	normals := make([][3]f32, 4, allocator)
+	for &n in normals do n = {0, 0, 1}
+	vertex.streams[.Normal] = transmute([]u8)normals
 
 	vertex.indices = make([]u32, 6, allocator)
 	vertex.indices[0] = 0
@@ -37,12 +44,9 @@ prim_quad :: proc(allocator := context.allocator) -> (vertex: Mesh) {
 	vertex.indices[4] = 2
 	vertex.indices[5] = 3
 
-	vertex.col = make([][4]f32, 4, allocator)
-	vertex.col[0] = {1, 0, 0, 1}
-	vertex.col[1] = {0, 1, 0, 1}
-	vertex.col[2] = {0, 0, 1, 1}
-	vertex.col[3] = {1, 1, 0, 1}
-
+	vertex.base_color = {1, 1, 1, 1}
+	vertex.aabb_min = {-0.5, -0.5, 0}
+	vertex.aabb_max = {0.5, 0.5, 0}
 	return
 }
 
