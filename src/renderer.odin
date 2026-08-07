@@ -1,6 +1,6 @@
 package render
 
-import "../gpu/gpu"
+import "gpu/gpu"
 import sdl "vendor:sdl3"
 
 FLIGHT :: 3

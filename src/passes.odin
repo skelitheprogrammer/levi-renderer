@@ -1,6 +1,6 @@
 package render
 
-import "../gpu/gpu"
+import "gpu/gpu"
 
 Pass :: struct {
 	run:     proc(pass: ^Pass, cmd: gpu.Command_Buffer, ctx: ^Frame_Ctx),
@@ -11,6 +11,7 @@ Pass :: struct {
 Lit_Root :: struct {
 	positions: rawptr,
 	normals:   rawptr,
+	instances: rawptr,
 	view_proj: [16]f32,
 }
 
@@ -31,6 +32,7 @@ pass_opaque :: proc(pass: ^Pass, cmd: gpu.Command_Buffer, ctx: ^Frame_Ctx) {
 	root := gpu.arena_alloc(ctx.arena, Lit_Root)
 	root.cpu.positions = s.streams[.Position].gpu.ptr
 	root.cpu.normals = s.streams[.Normal].gpu.ptr
+	root.cpu.instances = s.instances.gpu.ptr
 	root.cpu.view_proj = ctx.view_proj
 
 	gpu.cmd_draw_indexed_indirect_multi(

@@ -1,13 +1,13 @@
 package render
 
-import "../gpu/gpu"
 import "core:c"
 import "core:log"
 import "core:math"
 import "core:math/linalg"
+import "gpu/gpu"
 import sdl "vendor:sdl3"
 
-Window_Flags :: sdl.WindowFlags // alias: window config without importing sdl
+Window_Flags :: sdl.WindowFlags
 
 Renderer :: struct {
 	state:      Render_State,
@@ -19,8 +19,7 @@ Renderer :: struct {
 	next_frame: u64,
 }
 
-// Receives an already-created window and resolved shader directories.
-// Asset/path resolution is not the renderer's concern.
+
 renderer_init :: proc(
 	r: ^Renderer,
 	window: ^sdl.Window,
@@ -56,8 +55,8 @@ renderer_init :: proc(
 }
 
 renderer_set_scene :: proc(r: ^Renderer, meshes: []Mesh, models: []matrix[4, 4]f32) {
-	scene_destroy(&r.scene) // root cause: re-set used to leak every GPU buffer
-	if len(meshes) == 0 do return // empty scene draws nothing
+	scene_destroy(&r.scene)
+	if len(meshes) == 0 do return
 	upload_scene(&r.scene, meshes, models)
 }
 
@@ -95,7 +94,7 @@ renderer_destroy :: proc(r: ^Renderer) {
 	shader_registry_destroy(&r.shaders)
 	render_destroy(&r.state)
 
-	// window is app-owned: never destroy what you did not create
+
 	r.window = nil
 }
 

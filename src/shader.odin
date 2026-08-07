@@ -1,10 +1,10 @@
 package render
 
-import "../gpu/gpu"
 import "core:os"
 import path "core:path/filepath"
 import "core:slice"
 import "core:strings"
+import "gpu/gpu"
 
 Shader_Pair :: [gpu.Shader_Type_Graphics]gpu.Shader
 
