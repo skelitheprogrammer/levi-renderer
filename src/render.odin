@@ -1,121 +1,126 @@
-package render
+package levi
 
-import "core:c"
-import "core:log"
-import "core:math"
-import "core:math/linalg"
 import "gpu/gpu"
-import sdl "vendor:sdl3"
+import vk "vendor:vulkan"
 
-Window_Flags :: sdl.WindowFlags
-
-Renderer :: struct {
-	state:      Render_State,
-	scene:      Scene,
-	shaders:    Shader_Registry,
-	camera:     Camera,
-	pipeline:   []Pass,
-	window:     ^sdl.Window,
-	next_frame: u64,
+Render_State :: struct {
+	frames_in_flight: int,
+	frame_arenas:     [dynamic]gpu.Arena,
+	frame_sem:        gpu.Semaphore,
+	next_frame:       u64,
+	initialized:      bool,
 }
 
+Frame :: struct {
+	state:       ^Render_State,
+	cmd:         gpu.Command_Buffer,
+	arena:       ^gpu.Arena,
+	swapchain:   gpu.Texture,
+	frame_index: u64,
+}
 
-renderer_init :: proc(
-	r: ^Renderer,
-	window: ^sdl.Window,
-	shader_dirs: []string,
-	allocator := context.allocator,
-) {
-	ensure(window != nil, "nil window")
-	r.window = window
+Pass :: struct {
+	run:   proc(f: ^Frame),
+	stage: gpu.Stage,
+}
 
-	render_init(&r.state, r.window)
-	for dir in shader_dirs do shader_registry_scan(&r.shaders, dir, allocator)
+// Window-agnostic init.
+// The caller must provide a valid vk.SurfaceKHR.
+// SDL3: SDL_Vulkan_CreateSurface. GLFW: glfwCreateWindowSurface.
+render_init :: proc(
+	state: ^Render_State,
+	surface: vk.SurfaceKHR,
+	width: u32,
+	height: u32,
+	frames_in_flight := 3,
+	present_mode: gpu.Present_Mode = {},
+) -> bool {
+	assert(state != nil)
+	assert(frames_in_flight > 0)
 
-	w, h := renderer_size(r)
-	r.camera = Camera {
-		pos = {0, 0, -2},
-		rot = linalg.QUATERNIONF32_IDENTITY,
-		proj = Perspective{fov = math.to_radians_f32(60)},
-		near = 0.01,
-		far = 100,
-		aspect = f32(w) / f32(h),
+	if !gpu.init() {
+		return false
 	}
 
-	r.pipeline = default_pipeline(&r.shaders, "lit", allocator)
-	r.next_frame = 1
+	gpu.swapchain_create(surface, {width, height}, u32(frames_in_flight), present_mode)
 
-	log.infof(
-		"renderer ready: %dx%d, %d shaders, %d passes",
-		w,
-		h,
-		len(r.shaders.entries),
-		len(r.pipeline),
-	)
+	state.frames_in_flight = frames_in_flight
+	state.frame_sem = gpu.semaphore_create()
+	state.frame_arenas = make([dynamic]gpu.Arena, frames_in_flight)
+	for &a in state.frame_arenas {
+		a = gpu.arena_create()
+	}
+
+	state.next_frame = 1
+	state.initialized = true
+	return true
 }
 
-renderer_set_scene :: proc(r: ^Renderer, meshes: []Mesh, models: []matrix[4, 4]f32) {
-	scene_destroy(&r.scene)
-	if len(meshes) == 0 do return
-	upload_scene(&r.scene, meshes, models)
-}
+render_destroy :: proc(state: ^Render_State) {
+	if state == nil || !state.initialized {
+		return
+	}
 
-renderer_set_camera :: proc(r: ^Renderer, cam: Camera) {
-	r.camera = cam
-}
-
-renderer_set_pipeline :: proc(r: ^Renderer, pipeline: []Pass, allocator := context.allocator) {
-	delete(r.pipeline)
-	r.pipeline = append(make([]Pass, 0, len(pipeline), allocator), ..pipeline)
-}
-
-renderer_size :: proc(r: ^Renderer) -> (w, h: int) {
-	cw, ch: c.int
-	sdl.GetWindowSize(r.window, &cw, &ch)
-	return int(cw), int(ch)
-}
-
-renderer_frame :: proc(r: ^Renderer) {
-	renderer_check_resize(r)
-
-	ctx: Frame_Ctx
-	ctx.scene = &r.scene
-	ctx.view_proj = transmute([16]f32)camera_view_proj(r.camera)
-
-	render_frame(&r.state, &ctx, r.pipeline, r.next_frame)
-	r.next_frame += 1
-}
-
-renderer_destroy :: proc(r: ^Renderer) {
 	gpu.wait_idle()
 
-	delete(r.pipeline)
-	scene_destroy(&r.scene)
-	shader_registry_destroy(&r.shaders)
-	render_destroy(&r.state)
+	gpu.semaphore_destroy(state.frame_sem)
 
-
-	r.window = nil
-}
-
-default_pipeline :: proc(
-	shaders: ^Shader_Registry,
-	shader_name: string,
-	allocator := context.allocator,
-) -> []Pass {
-	passes := make([]Pass, 1, allocator)
-	passes[0] = Pass {
-		run     = pass_opaque,
-		shaders = resolve_shader_pair(shaders, shader_name),
-		barrier = .Raster_Color_Out,
+	for &a in state.frame_arenas {
+		gpu.arena_destroy(&a)
 	}
-	return passes
+	delete(state.frame_arenas)
+
+	gpu.cleanup()
+
+	state^ = {}
 }
 
-@(private)
-renderer_check_resize :: proc(r: ^Renderer) {
-	w, h: c.int
-	sdl.GetWindowSize(r.window, &w, &h)
-	if w == 0 || h == 0 do return
-	r.camera.aspect = f32(w) / f32(h)
+render_resize :: proc(state: ^Render_State, width: u32, height: u32) {
+	assert(state != nil)
+	if !state.initialized {
+		return
+	}
+	gpu.swapchain_resize({width, height})
+}
+
+render_frame :: proc(state: ^Render_State, passes: []Pass) {
+	assert(state != nil)
+	if !state.initialized || len(passes) == 0 {
+		return
+	}
+
+	if state.next_frame > u64(state.frames_in_flight) {
+		gpu.semaphore_wait(state.frame_sem, state.next_frame - u64(state.frames_in_flight))
+	}
+
+	swapchain := gpu.swapchain_acquire_next()
+
+	arena_index := int(state.next_frame % u64(state.frames_in_flight))
+	arena := &state.frame_arenas[arena_index]
+	gpu.arena_free_all(arena)
+
+	cmd := gpu.commands_begin(.Main)
+
+	f: Frame
+	f.state = state
+	f.cmd = cmd
+	f.arena = arena
+	f.swapchain = swapchain
+	f.frame_index = state.next_frame
+
+	for p, i in passes {
+		if p.run != nil {
+			p.run(&f)
+		}
+
+		if i + 1 < len(passes) {
+			gpu.cmd_barrier(cmd, p.stage, passes[i + 1].stage, {})
+		}
+	}
+
+	gpu.cmd_add_signal_semaphore(cmd, state.frame_sem, state.next_frame)
+	gpu.queue_submit(.Main, {cmd})
+	gpu.swapchain_present(.Main, state.frame_sem, state.next_frame)
+
+	state.next_frame += 1
 }
