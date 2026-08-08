@@ -14,8 +14,7 @@ Pass_State :: struct {
 	blend:  gpu.Blend_State,
 }
 
-// Shader combinations are plain shader handles.
-// No Shader_Set, no pipeline object.
+
 graphics :: proc(
 	f: ^Frame,
 	targets: Graphics_Targets,

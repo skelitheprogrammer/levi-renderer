@@ -2,19 +2,11 @@ package levi
 
 import "gpu/gpu"
 
-// Per-instance data is separate from geometry.
-// This matches glTF's separation of mesh primitives from node transforms [[1]]
-// and DOD's principle of separating data by access pattern [[2]].
-//
-// Instances are GPU-resident and streamable.
-// Culling compute shaders read this buffer directly.
-// Draw commands reference instances by index, not by pointer.
 
 Instance_Handle :: distinct u32
 Invalid_Instance :: Instance_Handle(0)
 
-// Default instance layout.
-// Users can define their own struct and use instance_storage_create_custom.
+
 Instance_Data :: struct {
 	transform:   [16]f32,
 	material_id: u32,
@@ -30,12 +22,10 @@ Instance_Storage :: struct {
 	capacity:  u32,
 	free_list: [dynamic]u32,
 	dirty:     bool,
-
-	// ponytail: old GPU buffers from growth are parked here and freed at destroy.
 	dead:      [dynamic]gpu.gpuptr,
 }
 
-// Create instance storage with a known element type.
+
 instance_storage_create :: proc($T: typeid, initial_capacity: u32) -> Instance_Storage {
 	assert(initial_capacity > 0)
 
@@ -47,8 +37,7 @@ instance_storage_create :: proc($T: typeid, initial_capacity: u32) -> Instance_S
 	return s
 }
 
-// Create instance storage with a custom stride.
-// Useful when the user-defined struct is not visible to this package.
+
 instance_storage_create_custom :: proc(stride: u32, initial_capacity: u32) -> Instance_Storage {
 	assert(stride > 0)
 	assert(initial_capacity > 0)
@@ -80,9 +69,7 @@ instance_storage_destroy :: proc(s: ^Instance_Storage) {
 	s^ = {}
 }
 
-// Upload a batch of instances into contiguous slots.
-// Returns the base handle for the first uploaded instance.
-// Handles are dense: base, base+1, ..., base+count-1.
+
 instance_upload :: proc(
 	s: ^Instance_Storage,
 	src: []byte,
@@ -120,7 +107,7 @@ instance_upload :: proc(
 	return Instance_Handle(base_slot + 1)
 }
 
-// Upload a typed slice of instances.
+
 instance_upload_typed :: proc(
 	s: ^Instance_Storage,
 	$T: typeid,
@@ -134,9 +121,7 @@ instance_upload_typed :: proc(
 	return instance_upload(s, raw, cmd, arena)
 }
 
-// Remove an instance by handle.
-// Marks the slot as free for reuse.
-// ponytail: does not compact. Add compaction when fragmentation matters.
+
 instance_remove :: proc(s: ^Instance_Storage, h: Instance_Handle) {
 	if s == nil || h == Invalid_Instance {
 		return
@@ -151,8 +136,7 @@ instance_remove :: proc(s: ^Instance_Storage, h: Instance_Handle) {
 	s.dirty = true
 }
 
-// Get GPU pointer to the instance buffer.
-// Pass this to culling compute shaders and draw passes.
+
 instance_gpu_ptr :: proc(s: ^Instance_Storage) -> gpu.gpuptr {
 	if s == nil {
 		return {}
@@ -160,9 +144,7 @@ instance_gpu_ptr :: proc(s: ^Instance_Storage) -> gpu.gpuptr {
 	return s.data.gpu
 }
 
-// Get current live instance count.
-// Note: this includes removed-but-not-compacted slots.
-// For GPU culling, pass the capacity or maintain a separate alive mask.
+
 instance_count :: proc(s: ^Instance_Storage) -> u32 {
 	if s == nil {
 		return 0
@@ -178,13 +160,13 @@ instance_stride :: proc(s: ^Instance_Storage) -> u32 {
 }
 
 find_contiguous_slots :: proc(s: ^Instance_Storage, count: u32) -> u32 {
-	// ponytail: linear scan of free list for contiguous block.
-	// Replace with a proper free-list/buddy allocator when fragmentation matters.
+
+
 	if count == 1 && len(s.free_list) > 0 {
 		return pop(&s.free_list)
 	}
 
-	// Fall back to appending at end.
+
 	return s.count
 }
 

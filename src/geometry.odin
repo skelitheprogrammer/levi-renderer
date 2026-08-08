@@ -16,8 +16,7 @@ Geometry_Range :: struct {
 	aabb_max:      [3]f32,
 }
 
-// User-defined attributes.
-// streams[a] must contain vertex_count * stride[a] bytes.
+
 Geometry_Desc :: struct {
 	vertex_count: u32,
 	streams:      [][]u8,
@@ -34,13 +33,10 @@ Geometry_Storage :: struct {
 	indices:         gpu.slice_t(u32),
 	index_used:      u64,
 	index_capacity:  u64,
-	ranges:          []Geometry_Range,
+	ranges:          [dynamic]Geometry_Range,
 	gpu_ranges:      gpu.slice_t(Geometry_Range),
-	handle_to_range: []u32,
-	free_handles:    []u32,
-
-	// ponytail: old GPU buffers from growth are parked here and freed at destroy.
-	// Add a frame deletion queue before heavy streaming.
+	handle_to_range: [dynamic]u32,
+	free_handles:    [dynamic]u32,
 	dead:            [dynamic]gpu.gpuptr,
 	dirty:           bool,
 }
@@ -165,8 +161,7 @@ geometry_upload_begin :: proc(storage: ^Geometry_Storage) -> Geometry_Upload_Sta
 	return stage
 }
 
-// No GPU calls happen here.
-// This only records the request.
+
 geometry_upload_add :: proc(
 	stage: ^Geometry_Upload_Stage,
 	desc: Geometry_Desc,
@@ -183,8 +178,7 @@ geometry_upload_add :: proc(
 	return h
 }
 
-// Records all staged uploads into one command buffer.
-// This is intended to be called once per upload stage.
+
 geometry_upload_commit :: proc(
 	stage: ^Geometry_Upload_Stage,
 	cmd: gpu.Command_Buffer,
@@ -304,8 +298,7 @@ geometry_upload_destroy :: proc(stage: ^Geometry_Upload_Stage) {
 	stage^ = {}
 }
 
-// Blocking convenience path.
-// Use only for boot-time loading, editor tools, or tests.
+
 geometry_upload_submit :: proc(stage: ^Geometry_Upload_Stage) {
 	assert(stage != nil)
 
@@ -327,9 +320,7 @@ geometry_upload_submit :: proc(stage: ^Geometry_Upload_Stage) {
 	geometry_upload_destroy(stage)
 }
 
-// ponytail: blocking upload.
-// Valid cases: tests, editor import, synchronous boot load.
-// Do not use inside a frame for streaming.
+
 geometry_add_immediate :: proc(g: ^Geometry_Storage, desc: Geometry_Desc) -> Geometry_Handle {
 	stage := geometry_upload_begin(g)
 	h := geometry_upload_add(&stage, desc)
@@ -337,7 +328,7 @@ geometry_add_immediate :: proc(g: ^Geometry_Storage, desc: Geometry_Desc) -> Geo
 	return h
 }
 
-// Upload CPU-side range table to GPU.
+
 geometry_sync :: proc(g: ^Geometry_Storage, cmd: gpu.Command_Buffer, arena: ^gpu.Arena) {
 	assert(g != nil)
 	assert(arena != nil)
@@ -367,9 +358,7 @@ geometry_sync :: proc(g: ^Geometry_Storage, cmd: gpu.Command_Buffer, arena: ^gpu
 	g.dirty = false
 }
 
-// Invalidates the range.
-// ponytail: this does not reclaim GPU vertex/index memory.
-// Add a real allocator/compaction pass when streaming churn becomes real.
+
 geometry_remove :: proc(g: ^Geometry_Storage, h: Geometry_Handle) {
 	if g == nil || h == Invalid_Geometry {
 		return

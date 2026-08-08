@@ -24,9 +24,7 @@ Pass :: struct {
 	stage: gpu.Stage,
 }
 
-// Window-agnostic init.
-// The caller must provide a valid vk.SurfaceKHR.
-// SDL3: SDL_Vulkan_CreateSurface. GLFW: glfwCreateWindowSurface.
+
 render_init :: proc(
 	state: ^Render_State,
 	surface: vk.SurfaceKHR,

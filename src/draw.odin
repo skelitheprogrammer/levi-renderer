@@ -47,8 +47,7 @@ draw_list_destroy :: proc(l: ^Draw_List) {
 	l^ = {}
 }
 
-// ponytail: CPU zeroes one u32.
-// If you want fully GPU-driven reset, clear the counter in a compute pass.
+
 draw_list_reset :: proc(f: ^Frame, l: Draw_List) {
 	assert(f != nil)
 
