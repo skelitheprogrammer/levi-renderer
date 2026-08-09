@@ -8,7 +8,6 @@ Render_State :: struct {
 	frame_arenas:     [dynamic]gpu.Arena,
 	frame_sem:        gpu.Semaphore,
 	next_frame:       u64,
-	initialized:      bool,
 }
 
 Frame :: struct {
@@ -24,6 +23,9 @@ Pass :: struct {
 	stage: gpu.Stage,
 }
 
+init :: #force_inline proc(validation: bool = true, loc := #caller_location) -> bool {
+	return gpu.init(validation, loc)
+}
 
 render_init :: proc(
 	state: ^Render_State,
@@ -36,29 +38,18 @@ render_init :: proc(
 	assert(state != nil)
 	assert(frames_in_flight > 0)
 
-	if !gpu.init() {
-		return false
-	}
-
 	gpu.swapchain_create(surface, {width, height}, u32(frames_in_flight), present_mode)
 
 	state.frames_in_flight = frames_in_flight
 	state.frame_sem = gpu.semaphore_create()
 	state.frame_arenas = make([dynamic]gpu.Arena, frames_in_flight)
-	for &a in state.frame_arenas {
-		a = gpu.arena_create()
-	}
+	for &a in state.frame_arenas do a = gpu.arena_create()
 
 	state.next_frame = 1
-	state.initialized = true
 	return true
 }
 
 render_destroy :: proc(state: ^Render_State) {
-	if state == nil || !state.initialized {
-		return
-	}
-
 	gpu.wait_idle()
 
 	gpu.semaphore_destroy(state.frame_sem)
@@ -75,17 +66,12 @@ render_destroy :: proc(state: ^Render_State) {
 
 render_resize :: proc(state: ^Render_State, width: u32, height: u32) {
 	assert(state != nil)
-	if !state.initialized {
-		return
-	}
 	gpu.swapchain_resize({width, height})
 }
 
 render_frame :: proc(state: ^Render_State, passes: []Pass) {
 	assert(state != nil)
-	if !state.initialized || len(passes) == 0 {
-		return
-	}
+	assert(passes != nil)
 
 	if state.next_frame > u64(state.frames_in_flight) {
 		gpu.semaphore_wait(state.frame_sem, state.next_frame - u64(state.frames_in_flight))

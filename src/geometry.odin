@@ -49,8 +49,8 @@ Geometry_Upload_Stage :: struct {
 
 geometry_create :: proc(
 	strides: []u32,
-	initial_vertices: u64,
-	initial_indices: u64,
+	initial_vertices: u64 = 1,
+	initial_indices: u64 = 1,
 ) -> Geometry_Storage {
 	assert(len(strides) > 0)
 
