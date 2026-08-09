@@ -22,12 +22,7 @@ Triangle_Pass :: struct {
 main :: proc() {
 	ok: bool
 	ok = sdl.Init({.VIDEO}); ensure(ok)
-	window := sdl.CreateWindow(
-		"triangle",
-		800,
-		600,
-		{.VULKAN, .RESIZABLE, .HIGH_PIXEL_DENSITY},
-	); ensure(window != nil)
+	window := sdl.CreateWindow("triangle", 800, 600, {.VULKAN, .RESIZABLE}); ensure(window != nil)
 	defer sdl.DestroyWindow(window)
 
 	r: levi.Renderer
@@ -121,7 +116,6 @@ poll_events :: proc() -> bool {
 
 triangle_pass :: proc(p: ^Triangle_Pass) -> levi.Pass {
 	return levi.Pass {
-		name = "triangle",
 		consumes = .Raster_Color_Out,
 		produces = .Raster_Color_Out,
 		hazards = {},
