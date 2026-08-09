@@ -1,3 +1,4 @@
 /.helix
 /.out
 /.ignore
+/examples/triangle/shaders/*.spv
